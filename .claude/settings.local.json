@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(rm -f CarHomeApis.py CarHomeApisTemp.py qichezhijia.log .env)",
+      "Bash(rm -f utils/CarHomeUtils.py utils/CarHomeCreatorUtils.py)",
+      "Bash(rm -rf utils/__pycache__)"
+    ]
+  }
+}
