@@ -89,12 +89,24 @@ ah.publish.zan_add(116675148)
 ah.publish.comment_add(116675148, '写得好')
 ```
 
-### 登录通道说明
+### 登录通道
 
-账密（`/Login/ValidIndexsm`，pwd=hex_md5）/ 短信（`SendRegLoginMobileCodesm`→`RegOrLoginByMobileCode`）/
-微信扫码（`GetWXLightAppQrCodeState` 轮询）三通道结构均已在 `autohome/auth.py` 实现，
-但登录前置的数美滑动验证码（`smdata.rid`）对合成事件返回 REJECT，需浏览器人工过码——
-因此**推荐直接导入 Cookie**，脚本侧零过码。
+| 通道 | 状态 | 说明 |
+|---|---|---|
+| **微信扫码** | ✅ 纯 HTTP 闭环 | `WechatQRLogin`：取码 → 轮询 → SSO 落 Cookie，无需浏览器 |
+| 账密 / 短信 | 结构已解 | 需先过数美滑块拿 rid（合成事件会被风控拒，需人工） |
+| 浏览器导 Cookie | ✅ | 任何方式登录后 F12 复制，`.env` 或构造参数直接给 |
+
+扫码登录（推荐，无需浏览器）::
+
+    from autohome.auth import WechatQRLogin
+    qr = WechatQRLogin()
+    header = qr.login(timeout=300)   # 终端展示二维码，扫码确认后返回 Cookie 头
+    ah = AutohomeClient(cookies=header)
+
+账密（`/Login/ValidIndexsm`，pwd=hex_md5）/ 短信（`SendRegLoginMobileCodesm`→`RegOrLoginByMobileCode`）
+结构已在 `autohome/auth.py` 实现，但登录前置的数美滑动验证码（`smdata.rid`）对合成事件返回 REJECT，
+需浏览器人工过码——**推荐扫码或直接导入 Cookie**，脚本侧零过码。
 
 ## 📁 结构
 
