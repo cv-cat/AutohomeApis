@@ -111,6 +111,25 @@ def main():
     except Exception as e:
         check('publish.guestBlocked', False, e)
 
+    # 12. 登录态（autohome_cookies.txt 存在且含登录 Cookie 时跑点赞冒烟，否则跳过）
+    import os
+    import http.cookiejar
+    if os.path.exists('autohome_cookies.txt'):
+        jar = http.cookiejar.MozillaCookieJar('autohome_cookies.txt')
+        jar.load(ignore_discard=True, ignore_expires=True)
+        names = {c.name for c in jar}
+        if 'clubwzuser' in names or 'sessionid' in names:
+            try:
+                header = '; '.join(f'{c.name}={c.value}' for c in jar)
+                ah2 = AutohomeClient(cookies=header)
+                st = ah2.auth.check_login()
+                zan = ah2.publish.zan_add(116675148)
+                check('login.zan', st.get('logged'), str(zan)[:80])
+            except Exception as e:
+                check('login.zan', False, e)
+        else:
+            print('[SKIP] login.zan — cookie 文件无登录态（扫码未完成）')
+
     ok = sum(1 for r in results if r['ok'])
     print(f'\n{ok}/{len(results)} PASS')
     with open('e2e_result.json', 'w', encoding='utf-8') as f:
