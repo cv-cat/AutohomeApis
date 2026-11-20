@@ -32,3 +32,5 @@ datas
 .env
 __pycache__/
 e2e_result.json
+autohome_cookies.txt
+autohome_qr.png
