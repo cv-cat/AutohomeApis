@@ -20,7 +20,10 @@
 
 import time
 
-from .base import BaseClient
+import json
+import re
+
+from .base import BaseClient, DEFAULT_UA
 
 # 登录后浏览器里必须存在的 Cookie（缺任何一个都视为未登录）
 _LOGIN_COOKIE_KEYS = ('autopcid', 'remember', 'sessionflag', 'sessionid',
@@ -164,3 +167,121 @@ class AuthManager(BaseClient):
         info = self.get_user_info(user_id)
         user.update(info)
         return user
+
+
+# ---------- 微信扫码登录（纯 HTTP） ----------
+
+class WechatQRLogin:
+    """微信扫码登录：取码 → 轮询 → SSO 落 Cookie。
+
+    全程 urllib，无需浏览器 / 无需数美滑块：
+
+    1. ``/oauth/getWXLightAppQrCodeUrl`` → 二维码 URL +
+       ``Set-Cookie: wxlightappsecuritykey``（轮询凭证）
+    2. 轮询 ``/oauth/GetWXLightAppQrCodeState``：Status 1 待扫 →
+       2 已扫待确认 → 3 确认（带 otherurl）→ 4 过期
+    3. GET ``otherurl`` → 登录 Cookie（clubwzuser / sessionid 等）
+
+    用法::
+
+        qr = WechatQRLogin()
+        qr.get_qr('qr.png')          # 保存二维码
+        header = qr.login()          # 轮询到确认后返回 Cookie 头
+        ah = AutohomeClient(cookies=header)
+    """
+
+    def __init__(self, cookie_file='autohome_cookies.txt', acw_tc=None):
+        import http.cookiejar
+        import urllib.request
+        self.cookie_file = cookie_file
+        self.jar = http.cookiejar.MozillaCookieJar()
+        if acw_tc:
+            self.jar.set_cookie(http.cookiejar.Cookie(
+                0, 'acw_tc', acw_tc, None, False, '.autohome.com.cn', True,
+                True, '/', True, False, None, False, None, None, {}))
+        self.opener = urllib.request.build_opener(
+            urllib.request.HTTPCookieProcessor(self.jar))
+        self.opener.addheaders = [
+            ('User-Agent', DEFAULT_UA),
+            ('Referer', f'https://{WechatQRLogin.HOST}/login'),
+            ('X-Requested-With', 'XMLHttpRequest'),
+        ]
+
+    HOST = 'account.autohome.com.cn'
+
+    def get_qr(self, save_path='autohome_qr.png'):
+        """取新二维码并保存图片。过期（Status=4）后重新调用即可。"""
+        import urllib.request
+        # 网关需要先有一次正常站内访问（拿 acw_tc），否则 405
+        self.opener.open('https://club.autohome.com.cn/', timeout=15).read()
+        url = (f'https://{self.HOST}/oauth/getWXLightAppQrCodeUrl'
+               f'?id={time.time()}&_={int(time.time() * 1000)}')
+        o = self._get_json(url)
+        if o.get('returncode') != 0:
+            raise RuntimeError(f'取码失败: {o}')
+        req = urllib.request.Request(o['result'],
+                                     headers={'User-Agent': DEFAULT_UA})
+        with open(save_path, 'wb') as f:
+            f.write(self.opener.open(req, timeout=15).read())
+        self._save()
+        return o['result']
+
+    def poll(self):
+        """查一次状态 → {'status': 1|2|3|4, 'otherurl'?, 'session_login'?}。"""
+        url = (f'https://{self.HOST}/oauth/GetWXLightAppQrCodeState'
+               f'?fPosition=0&sPosition=0&platform=1&popWindow=0'
+               f'&_={int(time.time() * 1000)}')
+        o = self._get_json(url)
+        result = o.get('result', {})
+        state = {'status': result.get('Status')}
+        if o.get('otherurl'):
+            state['otherurl'] = o['otherurl']
+        if result.get('SessionLogin'):
+            state['session_login'] = result['SessionLogin']
+        return state
+
+    def wait_login(self, timeout=300, on_status=None):
+        """轮询直到确认（3）或过期（4）。"""
+        deadline = time.time() + timeout
+        last = None
+        while time.time() < deadline:
+            st = self.poll()
+            if st['status'] != last:
+                last = st['status']
+                if on_status:
+                    on_status(last)
+            if st['status'] == 4:
+                return {'ok': False, 'status': 4, 'otherurl': ''}
+            if st['status'] == 3 and st.get('otherurl'):
+                self._sso(st['otherurl'])
+                return {'ok': True, 'status': 3, 'otherurl': st['otherurl']}
+            time.sleep(2.5)
+        return {'ok': False, 'status': last, 'otherurl': ''}
+
+    def login(self, timeout=300, save_path='autohome_qr.png'):
+        """一步登录：取码 → 轮询 → 返回 Cookie 头（失败返回 None）。"""
+        import urllib.request
+        img = self.get_qr(save_path)
+        print(f'扫码（App / 微信）: {save_path} | {img}')
+        res = self.wait_login(timeout)
+        if res['ok']:
+            self._save()
+            return self.cookie_header()
+        print('未完成扫码（过期 / 超时）')
+        return None
+
+    def cookie_header(self):
+        return '; '.join(f'{c.name}={c.value}' for c in self.jar)
+
+    # ---------- internal ----------
+    def _sso(self, otherurl):
+        url = otherurl if otherurl.startswith('http') else f'https://{self.HOST}{otherurl}'
+        self.opener.open(url, timeout=15).read()
+
+    def _save(self):
+        self.jar.save(self.cookie_file, ignore_discard=True, ignore_expires=True)
+
+    def _get_json(self, url):
+        raw = self.opener.open(url, timeout=15).read().decode('utf-8')
+        m = re.search(r'\{.*\}', raw, re.S)
+        return json.loads(m.group(0)) if m else json.loads(raw)
